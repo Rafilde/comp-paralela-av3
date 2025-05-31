@@ -3,6 +3,7 @@ import pickle
 import numpy as np
 from multiprocessing import Process
 import time
+import struct
 
 def create_matrix():
     print("=== Gerador de Matrizes Aleatórias ===")
@@ -54,10 +55,22 @@ def client_send_receive(host, port, A_chunk, B):
         client_socket.connect((host, port))
 
         data = pickle.dumps((A_chunk, B))
+        client_socket.sendall(struct.pack('>I', len(data)))
         client_socket.sendall(data)
 
-        result = client_socket.recv(4096)
-        C_chunk = pickle.loads(result)
+        size_data = client_socket.recv(4)
+        if not size_data:
+            raise ConnectionError("Nenhum dado recebido do servidor")
+        data_size = struct.unpack('>I', size_data)[0]
+
+        received_data = b""
+        while len(received_data) < data_size:
+            chunk = client_socket.recv(4096)
+            if not chunk:
+                raise ConnectionError("Conexão interrompida durante recebimento")
+            received_data += chunk
+
+        C_chunk = pickle.loads(received_data)
 
         client_socket.close()
         return C_chunk
@@ -68,6 +81,11 @@ def client_send_receive(host, port, A_chunk, B):
 if __name__ == "__main__":
     A, B, ROWS_A = create_matrix()
     if A is not None and B is not None:
+
+        start_serial = time.time()
+        C_serial = np.dot(A, B)
+        end_serial = time.time()
+
         HOSTS, PARTS_OF_MATRIX_A = generate_host(A, ROWS_A)
         if HOSTS is None or PARTS_OF_MATRIX_A is None:
             print("Erro ao gerar hosts ou partes da matriz.")
@@ -80,12 +98,16 @@ if __name__ == "__main__":
             server_processes.append(p)
             time.sleep(1)  
 
+        start_distributed = time.time()
+
         results = []
         for i, ((host, port), A_chunk) in enumerate(zip(HOSTS, PARTS_OF_MATRIX_A)):
             print(f"Enviando parte {i+1} para {host}:{port}")
             C_chunk = client_send_receive(host, port, A_chunk, B)
             if C_chunk is not None:
                 results.append(C_chunk)
+        
+        end_distributed = time.time()
 
         for p in server_processes:
             p.terminate()
@@ -94,5 +116,7 @@ if __name__ == "__main__":
             C = np.vstack(results)
             print("\nMatriz C (resultado da multiplicação):")
             print(C)
+            print(f"Tempo serial: {end_serial - start_serial:.4f} segundos")
+            print(f"\nTempo distribuído: {end_distributed - start_distributed:.4f} segundos")
         else:
             print("Nenhum resultado recebido dos servidores.")
